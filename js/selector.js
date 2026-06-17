@@ -848,7 +848,7 @@ const photos = [
 const STORAGE_KEY = 'valeria_photo_selections';
 const LIMITES = {
     ampliacion: 1,
-    impresion: 50,
+    impresion: null,
     invitacion: null
 };
 let photoSelections = {};
