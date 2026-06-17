@@ -1011,7 +1011,7 @@ function renderGallery() {
         const displayNumber = `Foto ${index + 1}`;
         const mediaHTML = `
             <div class="photo-image-container">
-                <img src="${getThumbPath(photo)}" alt="${displayNumber}" loading="lazy">
+                <img src="${getThumbPath(photo)}" alt="${displayNumber}" loading="lazy" onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='${photo}'}">
             </div>
         `;
 
