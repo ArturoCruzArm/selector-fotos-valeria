@@ -2159,3 +2159,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveSelections(); });
 window.addEventListener('beforeunload', () => saveSelections());
+ection();
+            else if (e.key === 'ArrowLeft') navigatePhoto('prev');
+            else if (e.key === 'ArrowRight') navigatePhoto('next');
+        }
+    });
+});
+
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveSelections(); });
+window.addEventListener('beforeunload', () => saveSelections());
