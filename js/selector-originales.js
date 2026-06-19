@@ -1831,51 +1831,110 @@ const photos = [
     'imagenes/todas originales/DSC_2056.webp'
 ];
 
-const STORAGE_KEY = 'valeria_originales_selections';
+const STORAGE_KEY = 'valeria_originales_photo_selections';
 const LIMITES = {
     ampliacion: 1,
-    impresion: 50,
+    impresion: null,
     invitacion: null
 };
 let photoSelections = {};
 let currentPhotoIndex = null;
 let currentFilter = 'all';
+const PAGE_SIZE = 60;
+const PAGE_KEY = 'valeria_originales_page';
+let currentPage = parseInt(sessionStorage.getItem(PAGE_KEY) || '0', 10);
 
+function normalizeSelection(selection) {
+    return {
+        ampliacion: !!(selection && selection.ampliacion),
+        impresion: !!(selection && selection.impresion),
+        invitacion: !!(selection && selection.invitacion),
+        descartada: !!(selection && selection.descartada)
+    };
+}
+
+function hasAnySelection(selection) {
+    const normalized = normalizeSelection(selection);
+    return normalized.ampliacion || normalized.impresion || normalized.invitacion || normalized.descartada;
+}
+
+function selectionsAreEqual(a, b) {
+    const left = normalizeSelection(a);
+    const right = normalizeSelection(b);
+    return left.ampliacion === right.ampliacion
+        && left.impresion === right.impresion
+        && left.invitacion === right.invitacion
+        && left.descartada === right.descartada;
+}
+
+// ========================================
+// LOCAL STORAGE FUNCTIONS
+// ========================================
 function loadSelections() {
     try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) photoSelections = JSON.parse(saved);
-    } catch (e) { photoSelections = {}; }
+        if (saved) {
+            photoSelections = JSON.parse(saved);
+        }
+    } catch (error) {
+        console.error('Error cargando selecciones:', error);
+        photoSelections = {};
+    }
 }
 
-function saveSelections() {
+function saveSelections(options) {
+    const shouldSync = !options || options.sync !== false;
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(photoSelections));
-    } catch (e) { showToast('Error al guardar.', 'error'); }
+    } catch (error) {
+        showToast('Error al guardar. Verifica el espacio del navegador.', 'error');
+    }
+    if (shouldSync && typeof sbUpsertSelections === 'function') {
+        sbUpsertSelections().catch(function(e) { console.warn('[Supabase] Sync:', e.message); });
+    }
 }
 
 function clearAllSelections() {
-    if (confirm('¿Borrar TODAS las selecciones? Esta acción no se puede deshacer.')) {
+    if (confirm('¿Estás seguro de que quieres borrar TODAS las selecciones? Esta acción no se puede deshacer.')) {
         photoSelections = {};
-        saveSelections(); renderGallery(); updateStats(); updateFilterButtons();
+        try { localStorage.setItem(STORAGE_KEY, '{}'); } catch(e) {}
+        if (typeof sbDeleteAll === 'function') {
+            sbDeleteAll().catch(function(e) { console.warn('[Supabase] DeleteAll:', e.message); });
+        }
+        renderGallery();
+        updateStats();
+        updateFilterButtons();
         showToast('Todas las selecciones han sido eliminadas', 'success');
     }
 }
 
+// ========================================
+// STATS FUNCTIONS
+// ========================================
 function getStats() {
-    const stats = { ampliacion: 0, impresion: 0, invitacion: 0, descartada: 0, sinClasificar: photos.length };
-    Object.values(photoSelections).forEach(s => {
-        if (s.ampliacion) stats.ampliacion++;
-        if (s.impresion) stats.impresion++;
-        if (s.invitacion) stats.invitacion++;
-        if (s.descartada) stats.descartada++;
+    const stats = {
+        ampliacion: 0,
+        impresion: 0,
+        invitacion: 0,
+        descartada: 0,
+        sinClasificar: photos.length
+    };
+
+    Object.values(photoSelections).forEach(selection => {
+        if (selection.ampliacion) stats.ampliacion++;
+        if (selection.impresion) stats.impresion++;
+        if (selection.invitacion) stats.invitacion++;
+        if (selection.descartada) stats.descartada++;
     });
+
     stats.sinClasificar = photos.length - Object.keys(photoSelections).length;
+
     return stats;
 }
 
 function updateStats() {
     const stats = getStats();
+
     document.getElementById('countAmpliacion').textContent =
         LIMITES.ampliacion ? `${stats.ampliacion}/${LIMITES.ampliacion}` : stats.ampliacion;
     document.getElementById('countImpresion').textContent =
@@ -1884,160 +1943,399 @@ function updateStats() {
     document.getElementById('countDescartada').textContent = stats.descartada;
     document.getElementById('countSinClasificar').textContent = stats.sinClasificar;
 
-    const ampCard = document.querySelector('.stat-card.ampliacion');
-    const impCard = document.querySelector('.stat-card.impresion');
-    if (ampCard) {
-        if (stats.ampliacion > LIMITES.ampliacion) { ampCard.style.borderColor = '#f44336'; ampCard.style.backgroundColor = 'rgba(244,67,54,0.1)'; }
-        else if (stats.ampliacion === LIMITES.ampliacion) { ampCard.style.borderColor = '#4caf50'; ampCard.style.backgroundColor = 'rgba(76,175,80,0.1)'; }
-        else { ampCard.style.borderColor = ''; ampCard.style.backgroundColor = ''; }
+    const ampliacionCard = document.querySelector('.stat-card.ampliacion');
+    const impresionCard = document.querySelector('.stat-card.impresion');
+
+    if (ampliacionCard) {
+        if (stats.ampliacion > LIMITES.ampliacion) {
+            ampliacionCard.style.borderColor = '#f44336';
+            ampliacionCard.style.backgroundColor = 'rgba(244, 67, 54, 0.1)';
+        } else if (stats.ampliacion === LIMITES.ampliacion) {
+            ampliacionCard.style.borderColor = '#4caf50';
+            ampliacionCard.style.backgroundColor = 'rgba(76, 175, 80, 0.1)';
+        } else {
+            ampliacionCard.style.borderColor = '';
+            ampliacionCard.style.backgroundColor = '';
+        }
     }
-    if (impCard) {
-        if (stats.impresion > LIMITES.impresion) { impCard.style.borderColor = '#f44336'; impCard.style.backgroundColor = 'rgba(244,67,54,0.1)'; }
-        else if (stats.impresion === LIMITES.impresion) { impCard.style.borderColor = '#4caf50'; impCard.style.backgroundColor = 'rgba(76,175,80,0.1)'; }
-        else { impCard.style.borderColor = ''; impCard.style.backgroundColor = ''; }
+
+    if (impresionCard && LIMITES.impresion) {
+        if (stats.impresion > LIMITES.impresion) {
+            impresionCard.style.borderColor = '#f44336';
+            impresionCard.style.backgroundColor = 'rgba(244, 67, 54, 0.1)';
+        } else if (stats.impresion === LIMITES.impresion) {
+            impresionCard.style.borderColor = '#4caf50';
+            impresionCard.style.backgroundColor = 'rgba(76, 175, 80, 0.1)';
+        } else {
+            impresionCard.style.borderColor = '';
+            impresionCard.style.backgroundColor = '';
+        }
     }
+}
+
+// ========================================
+// GALLERY FUNCTIONS
+// ========================================
+function getFilteredIndices() {
+    const indices = [];
+    for (let i = 0; i < photos.length; i++) {
+        const sel = photoSelections[i] || {};
+        let show = false;
+        switch (currentFilter) {
+            case 'all': show = true; break;
+            case 'ampliacion': show = sel.ampliacion === true; break;
+            case 'impresion': show = sel.impresion === true; break;
+            case 'invitacion': show = sel.invitacion === true; break;
+            case 'descartada': show = sel.descartada === true; break;
+            case 'sin-clasificar': show = !sel.ampliacion && !sel.impresion && !sel.invitacion && !sel.descartada; break;
+        }
+        if (show) indices.push(i);
+    }
+    return indices;
+}
+
+function getTotalPages() {
+    return Math.ceil(getFilteredIndices().length / PAGE_SIZE);
+}
+
+function getPagePhotos() {
+    const filtered = getFilteredIndices();
+    const start = currentPage * PAGE_SIZE;
+    const end = Math.min(start + PAGE_SIZE, filtered.length);
+    return { indices: filtered.slice(start, end), total: filtered.length, start, end };
+}
+
+function goToPage(page) {
+    const total = getTotalPages();
+    if (page < 0) page = 0;
+    if (page >= total) page = total - 1;
+    currentPage = page;
+    try { sessionStorage.setItem(PAGE_KEY, String(currentPage)); } catch(e) {}
+    renderGallery();
+    updateStats();
+    updateFilterButtons();
+    window.scrollTo({ top: document.querySelector('.gallery-section').offsetTop - 10, behavior: 'smooth' });
+}
+
+function renderPagination(container) {
+    const totalPages = getTotalPages();
+    if (totalPages <= 1) return;
+
+    const pageData = getPagePhotos();
+    const nav = document.createElement('div');
+    nav.className = 'pagination-nav';
+    nav.style.cssText = 'grid-column:1/-1;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;padding:16px 0;';
+
+    const btnStyle = 'border:none;padding:10px 18px;border-radius:25px;font-size:.95rem;font-weight:600;cursor:pointer;font-family:Lato,sans-serif;transition:all .2s;';
+
+    if (currentPage > 0) {
+        const prev = document.createElement('button');
+        prev.textContent = '\u2190 Anterior';
+        prev.style.cssText = btnStyle + 'background:#8b6f47;color:#fff;';
+        prev.addEventListener('click', () => goToPage(currentPage - 1));
+        nav.appendChild(prev);
+    }
+
+    const maxBtns = 7;
+    let pageStart = Math.max(0, currentPage - 3);
+    let pageEnd = Math.min(totalPages, pageStart + maxBtns);
+    if (pageEnd - pageStart < maxBtns) pageStart = Math.max(0, pageEnd - maxBtns);
+
+    for (let i = pageStart; i < pageEnd; i++) {
+        const btn = document.createElement('button');
+        btn.textContent = i + 1;
+        const isActive = i === currentPage;
+        btn.style.cssText = btnStyle + (isActive
+            ? 'background:#d4a373;color:#fff;transform:scale(1.1);'
+            : 'background:#eee;color:#333;');
+        if (!isActive) btn.addEventListener('click', () => goToPage(i));
+        nav.appendChild(btn);
+    }
+
+    if (currentPage < totalPages - 1) {
+        const next = document.createElement('button');
+        next.textContent = 'Siguiente \u2192';
+        next.style.cssText = btnStyle + 'background:#8b6f47;color:#fff;';
+        next.addEventListener('click', () => goToPage(currentPage + 1));
+        nav.appendChild(next);
+    }
+
+    const info = document.createElement('div');
+    info.style.cssText = 'grid-column:1/-1;text-align:center;color:#888;font-size:.85rem;padding:4px 0;';
+    info.textContent = `Fotos ${pageData.start + 1}\u2013${pageData.end} de ${pageData.total}`;
+
+    container.appendChild(info);
+    container.appendChild(nav);
 }
 
 function renderGallery() {
     const grid = document.getElementById('photosGrid');
+    if (!grid) return;
+    const topPag = document.getElementById('paginationTop');
+    const bottomPag = document.getElementById('paginationBottom');
+
     grid.innerHTML = '';
-    if (photos.length === 0) {
-        grid.innerHTML = '<div class="no-photos-message">No hay fotos disponibles aún.</div>';
+    if (topPag) topPag.innerHTML = '';
+    if (bottomPag) bottomPag.innerHTML = '';
+
+    const filtered = getFilteredIndices();
+    if (filtered.length === 0) {
+        grid.innerHTML = currentFilter === 'all'
+            ? '<div class="no-photos-message">No hay fotos disponibles a\u00fan.</div>'
+            : '<div class="no-photos-message">No hay fotos en esta categor\u00eda.</div>';
         return;
     }
-    photos.forEach((photo, index) => {
+
+    // Validar pagina actual
+    const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+    if (currentPage >= totalPages) currentPage = totalPages - 1;
+    if (currentPage < 0) currentPage = 0;
+
+    // Paginacion arriba
+    if (topPag) renderPagination(topPag);
+
+    const pgStart = currentPage * PAGE_SIZE;
+    const pgEnd = Math.min(pgStart + PAGE_SIZE, filtered.length);
+
+    for (let fi = pgStart; fi < pgEnd; fi++) {
+        const index = filtered[fi];
+        const photo = photos[index];
         const selection = photoSelections[index] || {};
         const hasAny = selection.ampliacion || selection.impresion || selection.invitacion || selection.descartada;
+
         const card = document.createElement('div');
         card.className = 'photo-card';
         card.dataset.index = index;
+
         if (selection.descartada) {
             card.classList.add('has-descartada');
         } else {
-            const cats = [];
-            if (selection.ampliacion) cats.push('ampliacion');
-            if (selection.impresion) cats.push('impresion');
-            if (selection.invitacion) cats.push('invitacion');
-            if (cats.length > 1) card.classList.add('has-multiple');
-            else if (cats.length === 1) card.classList.add(`has-${cats[0]}`);
+            const categories = [];
+            if (selection.ampliacion) categories.push('ampliacion');
+            if (selection.impresion) categories.push('impresion');
+            if (selection.invitacion) categories.push('invitacion');
+
+            if (categories.length > 1) {
+                card.classList.add('has-multiple');
+            } else if (categories.length === 1) {
+                card.classList.add(`has-${categories[0]}`);
+            }
         }
+
         let badgesHTML = '';
         if (hasAny) {
             badgesHTML = '<div class="photo-badges">';
-            if (selection.ampliacion) badgesHTML += '<span class="badge badge-ampliacion">🖼️ Ampliación</span>';
-            if (selection.impresion) badgesHTML += '<span class="badge badge-impresion">📸 Impresión</span>';
-            if (selection.invitacion) badgesHTML += '<span class="badge badge-invitacion">💌 Invitación</span>';
-            if (selection.descartada) badgesHTML += '<span class="badge badge-descartada">❌ Descartada</span>';
+            if (selection.ampliacion) badgesHTML += '<span class="badge badge-ampliacion">\uD83D\uDDBC\uFE0F Ampliaci\u00f3n</span>';
+            if (selection.impresion) badgesHTML += '<span class="badge badge-impresion">\uD83D\uDCF8 Impresi\u00f3n</span>';
+            if (selection.invitacion) badgesHTML += '<span class="badge badge-invitacion">\uD83D\uDC8C Invitaci\u00f3n</span>';
+            if (selection.descartada) badgesHTML += '<span class="badge badge-descartada">\u274C Descartada</span>';
             badgesHTML += '</div>';
         }
+
         const displayNumber = `Foto ${index + 1}`;
-        card.innerHTML = `
+        const mediaHTML = `
             <div class="photo-image-container">
                 <img src="${photo}" alt="${displayNumber}" loading="lazy">
             </div>
+        `;
+
+        card.innerHTML = `
+            ${mediaHTML}
             <div class="photo-number">${displayNumber}</div>
             ${badgesHTML}
         `;
+
         card.addEventListener('click', () => openModal(index));
         grid.appendChild(card);
-    });
-    applyFilter();
+    }
+
+    // Paginacion abajo
+    if (bottomPag) renderPagination(bottomPag);
 }
 
-function applyFilter() {
-    document.querySelectorAll('.photo-card').forEach(card => {
-        const index = parseInt(card.dataset.index);
-        const selection = photoSelections[index] || {};
-        let show = false;
-        switch (currentFilter) {
-            case 'all': show = true; break;
-            case 'ampliacion': show = selection.ampliacion === true; break;
-            case 'impresion': show = selection.impresion === true; break;
-            case 'invitacion': show = selection.invitacion === true; break;
-            case 'descartada': show = selection.descartada === true; break;
-            case 'sin-clasificar': show = !selection.ampliacion && !selection.impresion && !selection.invitacion && !selection.descartada; break;
-        }
-        card.classList.toggle('hidden', !show);
-    });
-}
-
+// ========================================
+// FILTER FUNCTIONS
+// ========================================
 function setFilter(filter) {
     currentFilter = filter;
-    applyFilter();
-    document.querySelectorAll('.btn-filter').forEach(btn => btn.classList.remove('active'));
+    currentPage = 0;
+    renderGallery();
+    updateStats();
+
+    document.querySelectorAll('.btn-filter').forEach(btn => {
+        btn.classList.remove('active');
+    });
+
     const activeBtn = document.querySelector(`[data-filter="${filter}"]`);
-    if (activeBtn) activeBtn.classList.add('active');
+    if (activeBtn) {
+        activeBtn.classList.add('active');
+    }
 }
 
 function updateFilterButtons() {
     const stats = getStats();
+
     document.getElementById('btnFilterAll').textContent = `Todas (${photos.length})`;
-    document.getElementById('btnFilterAmpliacion').textContent = `Ampliación (${stats.ampliacion})`;
-    document.getElementById('btnFilterImpresion').textContent = `Impresión (${stats.impresion})`;
-    document.getElementById('btnFilterInvitacion').textContent = `Invitación (${stats.invitacion})`;
+    document.getElementById('btnFilterAmpliacion').textContent = `Ampliaci\u00f3n (${stats.ampliacion})`;
+    document.getElementById('btnFilterImpresion').textContent = `Impresi\u00f3n (${stats.impresion})`;
+    document.getElementById('btnFilterInvitacion').textContent = `Invitaci\u00f3n (${stats.invitacion})`;
     document.getElementById('btnFilterDescartada').textContent = `Descartadas (${stats.descartada})`;
     document.getElementById('btnFilterSinClasificar').textContent = `Sin Clasificar (${stats.sinClasificar})`;
 }
 
+// ========================================
+// MODAL FUNCTIONS
+// ========================================
 function openModal(index) {
     currentPhotoIndex = index;
     const modal = document.getElementById('photoModal');
     const modalImageContainer = document.querySelector('.modal-image-container');
+    const modalPhotoNumber = document.getElementById('modalPhotoNumber');
+
     const photo = photos[index];
     const displayNumber = `Foto ${index + 1}`;
-    document.getElementById('modalPhotoNumber').textContent = displayNumber;
+
+    modalPhotoNumber.textContent = displayNumber;
+
     modalImageContainer.innerHTML = `
         <img id="modalImage" src="${photo}" alt="${displayNumber}">
         <div class="modal-photo-number" id="modalPhotoNumber">${displayNumber}</div>
     `;
+
     const selection = photoSelections[index] || {};
+
     document.querySelectorAll('.option-btn').forEach(btn => {
-        btn.classList.toggle('selected', selection[btn.dataset.category] === true);
+        const category = btn.dataset.category;
+        btn.classList.toggle('selected', selection[category] === true);
     });
+
     modal.classList.add('active');
-    const btnPrev = document.getElementById('btnPrevPhoto');
-    const btnNext = document.getElementById('btnNextPhoto');
-    if (btnPrev) btnPrev.disabled = false;
-    if (btnNext) btnNext.disabled = false;
+    updateNavigationButtons();
     document.body.style.overflow = 'hidden';
 }
 
 function closeModal() {
-    document.getElementById('photoModal').classList.remove('active');
+    saveCurrentSelections();
+    renderGallery();
+    const modal = document.getElementById('photoModal');
+    modal.classList.remove('active');
     document.body.style.overflow = 'auto';
     currentPhotoIndex = null;
 }
 
+// ========================================
+// NAVIGATION FUNCTIONS
+// ========================================
 function navigatePhoto(direction) {
     if (currentPhotoIndex === null) return;
+
+    let newIndex;
+    if (direction === "next") {
+        newIndex = currentPhotoIndex + 1;
+        if (newIndex >= photos.length) {
+            newIndex = 0;
+        }
+    } else if (direction === "prev") {
+        newIndex = currentPhotoIndex - 1;
+        if (newIndex < 0) {
+            newIndex = photos.length - 1;
+        }
+    }
+
     saveCurrentSelections();
-    let newIndex = direction === 'next' ? currentPhotoIndex + 1 : currentPhotoIndex - 1;
-    if (newIndex >= photos.length) newIndex = 0;
-    if (newIndex < 0) newIndex = photos.length - 1;
     openModal(newIndex);
 }
 
 function saveCurrentSelections() {
     if (currentPhotoIndex === null) return;
+
     const selectedCategories = {};
-    let hasAny = false;
-    document.querySelectorAll('.option-btn').forEach(btn => {
-        const isSelected = btn.classList.contains('selected');
-        selectedCategories[btn.dataset.category] = isSelected;
-        if (isSelected) hasAny = true;
+    document.querySelectorAll(".option-btn").forEach(btn => {
+        const category = btn.dataset.category;
+        selectedCategories[category] = btn.classList.contains("selected");
     });
-    if (hasAny) photoSelections[currentPhotoIndex] = selectedCategories;
-    else delete photoSelections[currentPhotoIndex];
-    saveSelections(); updateStats(); updateFilterButtons();
+
+    persistPhotoSelection(currentPhotoIndex, selectedCategories, { silent: true });
+    updateStats();
+    updateFilterButtons();
+}
+
+function persistPhotoSelection(index, selection, options) {
+    const previousSelection = photoSelections[index] || {};
+    const normalized = normalizeSelection(selection);
+    const changed = !selectionsAreEqual(previousSelection, normalized);
+    const silent = options && options.silent;
+
+    if (!changed) {
+        saveSelections({ sync: false });
+        return false;
+    }
+
+    if (hasAnySelection(normalized)) {
+        photoSelections[index] = normalized;
+        saveSelections({ sync: false });
+        if (typeof sbSaveSelection === 'function') {
+            sbSaveSelection(index, normalized).catch(function(e) { console.warn('[Supabase] Save:', e.message); });
+        } else if (typeof sbUpsertSelections === 'function') {
+            sbUpsertSelections().catch(function(e) { console.warn('[Supabase] Sync:', e.message); });
+        }
+    } else {
+        delete photoSelections[index];
+        saveSelections({ sync: false });
+        if (typeof sbDeleteSelection === 'function') {
+            sbDeleteSelection(index).catch(function(e) { console.warn('[Supabase] Delete:', e.message); });
+        }
+    }
+
+    if (!silent) showToast('Selecci\u00f3n actualizada', 'success');
+    return true;
+}
+
+function deleteCurrentSelection() {
+    if (currentPhotoIndex === null) return;
+    const displayNumber = currentPhotoIndex + 1;
+    if (!confirm('\u00bfBorrar la selecci\u00f3n de la foto ' + displayNumber + '? Esta acci\u00f3n se sincronizar\u00e1 con todos los dispositivos.')) {
+        return;
+    }
+    persistPhotoSelection(currentPhotoIndex, {}, { silent: true });
+    document.querySelectorAll('.option-btn').forEach(btn => btn.classList.remove('selected'));
+    renderGallery();
+    updateStats();
+    updateFilterButtons();
+    closeModal();
+    showToast('Selecci\u00f3n borrada', 'success');
+}
+
+function updateNavigationButtons() {
+    const btnPrev = document.getElementById("btnPrevPhoto");
+    const btnNext = document.getElementById("btnNextPhoto");
+
+    if (btnPrev && btnNext) {
+        btnPrev.disabled = false;
+        btnNext.disabled = false;
+    }
 }
 
 function saveModalSelection() {
     if (currentPhotoIndex === null) return;
-    saveCurrentSelections();
-    renderGallery(); closeModal();
-    showToast('Selección guardada correctamente', 'success');
+
+    const selectedCategories = {};
+    document.querySelectorAll('.option-btn').forEach(btn => {
+        const category = btn.dataset.category;
+        selectedCategories[category] = btn.classList.contains('selected');
+    });
+
+    persistPhotoSelection(currentPhotoIndex, selectedCategories, { silent: true });
+    renderGallery();
+    updateStats();
+    updateFilterButtons();
+    closeModal();
+    showToast('Selecci\u00f3n guardada correctamente', 'success');
 }
 
+// ========================================
+// EXPORT FUNCTIONS
+// ========================================
 function exportToJSON() {
     const exportData = {
         evento: 'Valeria - Originales',
@@ -2046,12 +2344,21 @@ function exportToJSON() {
         estadisticas: getStats(),
         selecciones: []
     };
+
     photos.forEach((photo, index) => {
-        const s = photoSelections[index];
-        if (s && (s.ampliacion || s.impresion || s.invitacion || s.descartada)) {
-            exportData.selecciones.push({ numero_foto: index + 1, archivo: photo, ampliacion: s.ampliacion || false, impresion: s.impresion || false, invitacion: s.invitacion || false, descartada: s.descartada || false });
+        const selection = photoSelections[index];
+        if (selection && (selection.ampliacion || selection.impresion || selection.invitacion || selection.descartada)) {
+            exportData.selecciones.push({
+                numero_foto: index + 1,
+                archivo: photo,
+                ampliacion: selection.ampliacion || false,
+                impresion: selection.impresion || false,
+                invitacion: selection.invitacion || false,
+                descartada: selection.descartada || false
+            });
         }
     });
+
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2059,47 +2366,90 @@ function exportToJSON() {
     a.download = `seleccion-originales-valeria-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
+
     showToast('Reporte descargado correctamente', 'success');
 }
 
 function generateTextSummary() {
     const stats = getStats();
-    let summary = '📸 SELECCIÓN ORIGINALES - VALERIA\n';
-    summary += '═══════════════════════════════════════════════════\n\n';
-    summary += `📊 RESUMEN ACTUAL:\n   Total: ${photos.length}\n`;
-    summary += `   🖼️  Ampliación: ${stats.ampliacion}\n   📸 Impresión: ${stats.impresion}\n`;
-    summary += `   💌 Invitación: ${stats.invitacion}\n   ❌ Descartadas: ${stats.descartada}\n   ⭕ Sin clasificar: ${stats.sinClasificar}\n\n`;
+    let summary = '\uD83D\uDCF8 SELECCI\u00d3N ORIGINALES - VALERIA\n';
+    summary += '\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\n';
+    summary += `\uD83D\uDCCA RESUMEN ACTUAL:\n   Total: ${photos.length}\n`;
+    summary += `   \uD83D\uDDBC\uFE0F  Ampliaci\u00f3n: ${stats.ampliacion}\n   \uD83D\uDCF8 Impresi\u00f3n: ${stats.impresion}\n`;
+    summary += `   \uD83D\uDC8C Invitaci\u00f3n: ${stats.invitacion}\n   \u274C Descartadas: ${stats.descartada}\n   \u2B55 Sin clasificar: ${stats.sinClasificar}\n\n`;
+
     const categories = ['ampliacion', 'impresion', 'invitacion', 'descartada'];
-    const categoryNames = { ampliacion: '🖼️  AMPLIACIÓN', impresion: '📸 IMPRESIÓN', invitacion: '💌 INVITACIÓN', descartada: '❌ DESCARTADAS' };
+    const categoryNames = {
+        ampliacion: '\uD83D\uDDBC\uFE0F  AMPLIACI\u00d3N',
+        impresion: '\uD83D\uDCF8 IMPRESI\u00d3N',
+        invitacion: '\uD83D\uDC8C INVITACI\u00d3N',
+        descartada: '\u274C DESCARTADAS'
+    };
+
     categories.forEach(category => {
-        const inCat = [];
-        photos.forEach((photo, index) => { const s = photoSelections[index]; if (s && s[category]) inCat.push(index + 1); });
-        if (inCat.length > 0) { summary += `${categoryNames[category]}:\n   Fotos: ${inCat.join(', ')}\n   Total: ${inCat.length}\n\n`; }
+        const photosInCategory = [];
+        photos.forEach((photo, index) => {
+            const selection = photoSelections[index];
+            if (selection && selection[category]) {
+                photosInCategory.push(index + 1);
+            }
+        });
+
+        if (photosInCategory.length > 0) {
+            summary += `${categoryNames[category]}:\n`;
+            summary += `   Fotos: ${photosInCategory.join(', ')}\n`;
+            summary += `   Total: ${photosInCategory.length}\n\n`;
+        }
     });
-    summary += `\n📅 Generado el: ${new Date().toLocaleString('es-MX')}\n`;
+
+    summary += `\n\uD83D\uDCC5 Generado el: ${new Date().toLocaleString('es-MX')}\n`;
+
     return summary;
 }
 
 function copyToClipboard() {
     const summary = generateTextSummary();
-    navigator.clipboard.writeText(summary).then(() => showToast('Resumen copiado al portapapeles', 'success')).catch(() => {
-        const t = document.createElement('textarea');
-        t.value = summary; t.style.position = 'fixed'; t.style.opacity = '0';
-        document.body.appendChild(t); t.select(); document.execCommand('copy');
-        document.body.removeChild(t); showToast('Resumen copiado al portapapeles', 'success');
+
+    navigator.clipboard.writeText(summary).then(() => {
+        showToast('Resumen copiado al portapapeles', 'success');
+    }).catch(() => {
+        const textarea = document.createElement('textarea');
+        textarea.value = summary;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        showToast('Resumen copiado al portapapeles', 'success');
     });
 }
 
+// ========================================
+// TOAST NOTIFICATION
+// ========================================
 function showToast(message, type = 'success') {
     const toast = document.getElementById('toast');
     toast.textContent = message;
     toast.className = `toast ${type}`;
-    setTimeout(() => toast.classList.add('show'), 100);
-    setTimeout(() => toast.classList.remove('show'), 3000);
+
+    setTimeout(() => {
+        toast.classList.add('show');
+    }, 100);
+
+    setTimeout(() => {
+        toast.classList.remove('show');
+    }, 3000);
 }
 
+// ========================================
+// EVENT LISTENERS
+// ========================================
 document.addEventListener('DOMContentLoaded', () => {
-    loadSelections(); renderGallery(); updateStats(); updateFilterButtons();
+    loadSelections();
+    renderGallery();
+    updateStats();
+    updateFilterButtons();
 
     document.getElementById('btnFilterAll').addEventListener('click', () => setFilter('all'));
     document.getElementById('btnFilterAmpliacion').addEventListener('click', () => setFilter('ampliacion'));
@@ -2114,6 +2464,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnFilterInvitacion').dataset.filter = 'invitacion';
     document.getElementById('btnFilterDescartada').dataset.filter = 'descartada';
     document.getElementById('btnFilterSinClasificar').dataset.filter = 'sin-clasificar';
+
     document.getElementById('btnFilterAll').classList.add('active');
 
     document.getElementById('btnExport').addEventListener('click', exportToJSON);
@@ -2123,48 +2474,76 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelector('.modal-close').addEventListener('click', closeModal);
     document.getElementById('btnCancelSelection').addEventListener('click', closeModal);
     document.getElementById('btnSaveSelection').addEventListener('click', saveModalSelection);
+    var btnDel = document.getElementById('btnDeleteSelection');
+    if (btnDel) btnDel.addEventListener('click', deleteCurrentSelection);
 
     document.querySelectorAll('.option-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const category = btn.dataset.category;
-            if (!btn.classList.contains('selected')) {
+            const isCurrentlySelected = btn.classList.contains('selected');
+
+            if (!isCurrentlySelected) {
                 const stats = getStats();
+
                 if (category === 'ampliacion' && stats.ampliacion >= LIMITES.ampliacion) {
-                    const cur = photoSelections[currentPhotoIndex] || {};
-                    if (!cur.ampliacion) { showToast(`⚠️ Ya seleccionaste ${LIMITES.ampliacion} foto(s) para ampliación.`, 'error'); return; }
+                    const currentSelection = photoSelections[currentPhotoIndex] || {};
+                    if (!currentSelection.ampliacion) {
+                        showToast(`\u26A0\uFE0F Ya seleccionaste ${LIMITES.ampliacion} foto(s) para ampliaci\u00f3n. Deselecciona otra primero.`, 'error');
+                        return;
+                    }
                 }
-                if (category === 'impresion' && stats.impresion >= LIMITES.impresion) {
-                    const cur = photoSelections[currentPhotoIndex] || {};
-                    if (!cur.impresion) { showToast(`⚠️ Ya seleccionaste ${LIMITES.impresion} fotos para impresión.`, 'error'); return; }
+
+                if (LIMITES.impresion && category === 'impresion' && stats.impresion >= LIMITES.impresion) {
+                    const currentSelection = photoSelections[currentPhotoIndex] || {};
+                    if (!currentSelection.impresion) {
+                        showToast(`\u26A0\uFE0F Ya seleccionaste ${LIMITES.impresion} fotos para impresi\u00f3n. Deselecciona otra primero.`, 'error');
+                        return;
+                    }
                 }
             }
+
             btn.classList.toggle('selected');
         });
     });
 
-    document.getElementById('photoModal').addEventListener('click', (e) => { if (e.target.id === 'photoModal') closeModal(); });
-    document.getElementById('btnPrevPhoto').addEventListener('click', () => navigatePhoto('prev'));
-    document.getElementById('btnNextPhoto').addEventListener('click', () => navigatePhoto('next'));
+    document.getElementById('photoModal').addEventListener('click', (e) => {
+        if (e.target.id === 'photoModal') {
+            closeModal();
+        }
+    });
+
+    document.getElementById('btnPrevPhoto').addEventListener('click', () => {
+        navigatePhoto('prev');
+    });
+
+    document.getElementById('btnNextPhoto').addEventListener('click', () => {
+        navigatePhoto('next');
+    });
 
     document.addEventListener('keydown', (e) => {
         const modal = document.getElementById('photoModal');
         if (modal.classList.contains('active')) {
-            if (e.key === 'Escape') closeModal();
-            else if (e.key === 'Enter') saveModalSelection();
-            else if (e.key === 'ArrowLeft') navigatePhoto('prev');
-            else if (e.key === 'ArrowRight') navigatePhoto('next');
+            if (e.key === 'Escape') {
+                closeModal();
+            } else if (e.key === 'Enter') {
+                saveModalSelection();
+            } else if (e.key === 'ArrowLeft') {
+                navigatePhoto('prev');
+            } else if (e.key === 'ArrowRight') {
+                navigatePhoto('next');
+            }
         }
     });
 });
 
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveSelections(); });
-window.addEventListener('beforeunload', () => saveSelections());
-ection();
-            else if (e.key === 'ArrowLeft') navigatePhoto('prev');
-            else if (e.key === 'ArrowRight') navigatePhoto('next');
-        }
-    });
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        saveSelections({ sync: false });
+    } else if (typeof sbRefreshSelections === 'function') {
+        sbRefreshSelections().catch(function(e) { console.warn('[Supabase] Refresh:', e.message); });
+    }
 });
 
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveSelections(); });
-window.addEventListener('beforeunload', () => saveSelections());
+window.addEventListener('beforeunload', () => {
+    saveSelections({ sync: false });
+});
