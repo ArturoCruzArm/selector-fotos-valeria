@@ -863,6 +863,29 @@ function getThumbPath(fullPath) {
     return fullPath.replace('imagenes/', 'imagenes/thumb/');
 }
 
+function normalizeSelection(selection) {
+    return {
+        ampliacion: !!(selection && selection.ampliacion),
+        impresion: !!(selection && selection.impresion),
+        invitacion: !!(selection && selection.invitacion),
+        descartada: !!(selection && selection.descartada)
+    };
+}
+
+function hasAnySelection(selection) {
+    const normalized = normalizeSelection(selection);
+    return normalized.ampliacion || normalized.impresion || normalized.invitacion || normalized.descartada;
+}
+
+function selectionsAreEqual(a, b) {
+    const left = normalizeSelection(a);
+    const right = normalizeSelection(b);
+    return left.ampliacion === right.ampliacion
+        && left.impresion === right.impresion
+        && left.invitacion === right.invitacion
+        && left.descartada === right.descartada;
+}
+
 // ========================================
 // LOCAL STORAGE FUNCTIONS
 // ========================================
@@ -878,19 +901,25 @@ function loadSelections() {
     }
 }
 
-function saveSelections() {
+function saveSelections(options) {
+    const shouldSync = !options || options.sync !== false;
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(photoSelections));
     } catch (error) {
-        console.error('Error guardando selecciones:', error);
         showToast('Error al guardar. Verifica el espacio del navegador.', 'error');
+    }
+    if (shouldSync && typeof sbUpsertSelections === 'function') {
+        sbUpsertSelections().catch(function(e) { console.warn('[Supabase] Sync:', e.message); });
     }
 }
 
 function clearAllSelections() {
     if (confirm('¿Estás seguro de que quieres borrar TODAS las selecciones? Esta acción no se puede deshacer.')) {
         photoSelections = {};
-        saveSelections();
+        try { localStorage.setItem(STORAGE_KEY, '{}'); } catch(e) {}
+        if (typeof sbDeleteAll === 'function') {
+            sbDeleteAll().catch(function(e) { console.warn('[Supabase] DeleteAll:', e.message); });
+        }
         renderGallery();
         updateStats();
         updateFilterButtons();
@@ -966,16 +995,130 @@ function updateStats() {
 // ========================================
 // GALLERY FUNCTIONS
 // ========================================
+function getFilteredIndices() {
+    const indices = [];
+    for (let i = 0; i < photos.length; i++) {
+        const sel = photoSelections[i] || {};
+        let show = false;
+        switch (currentFilter) {
+            case 'all': show = true; break;
+            case 'ampliacion': show = sel.ampliacion === true; break;
+            case 'impresion': show = sel.impresion === true; break;
+            case 'invitacion': show = sel.invitacion === true; break;
+            case 'descartada': show = sel.descartada === true; break;
+            case 'sin-clasificar': show = !sel.ampliacion && !sel.impresion && !sel.invitacion && !sel.descartada; break;
+        }
+        if (show) indices.push(i);
+    }
+    return indices;
+}
+
+function getTotalPages() {
+    return Math.ceil(getFilteredIndices().length / PAGE_SIZE);
+}
+
+function getPagePhotos() {
+    const filtered = getFilteredIndices();
+    const start = currentPage * PAGE_SIZE;
+    const end = Math.min(start + PAGE_SIZE, filtered.length);
+    return { indices: filtered.slice(start, end), total: filtered.length, start, end };
+}
+
+function goToPage(page) {
+    const total = getTotalPages();
+    if (page < 0) page = 0;
+    if (page >= total) page = total - 1;
+    currentPage = page;
+    try { sessionStorage.setItem(PAGE_KEY, String(currentPage)); } catch(e) {}
+    renderGallery();
+    updateStats();
+    updateFilterButtons();
+    window.scrollTo({ top: document.querySelector('.gallery-section').offsetTop - 10, behavior: 'smooth' });
+}
+
+function renderPagination(container) {
+    const totalPages = getTotalPages();
+    if (totalPages <= 1) return;
+
+    const pageData = getPagePhotos();
+    const nav = document.createElement('div');
+    nav.className = 'pagination-nav';
+    nav.style.cssText = 'grid-column:1/-1;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;padding:16px 0;';
+
+    const btnStyle = 'border:none;padding:10px 18px;border-radius:25px;font-size:.95rem;font-weight:600;cursor:pointer;font-family:Lato,sans-serif;transition:all .2s;';
+
+    if (currentPage > 0) {
+        const prev = document.createElement('button');
+        prev.textContent = '\u2190 Anterior';
+        prev.style.cssText = btnStyle + 'background:#8b6f47;color:#fff;';
+        prev.addEventListener('click', () => goToPage(currentPage - 1));
+        nav.appendChild(prev);
+    }
+
+    const maxBtns = 7;
+    let pageStart = Math.max(0, currentPage - 3);
+    let pageEnd = Math.min(totalPages, pageStart + maxBtns);
+    if (pageEnd - pageStart < maxBtns) pageStart = Math.max(0, pageEnd - maxBtns);
+
+    for (let i = pageStart; i < pageEnd; i++) {
+        const btn = document.createElement('button');
+        btn.textContent = i + 1;
+        const isActive = i === currentPage;
+        btn.style.cssText = btnStyle + (isActive
+            ? 'background:#d4a373;color:#fff;transform:scale(1.1);'
+            : 'background:#eee;color:#333;');
+        if (!isActive) btn.addEventListener('click', () => goToPage(i));
+        nav.appendChild(btn);
+    }
+
+    if (currentPage < totalPages - 1) {
+        const next = document.createElement('button');
+        next.textContent = 'Siguiente \u2192';
+        next.style.cssText = btnStyle + 'background:#8b6f47;color:#fff;';
+        next.addEventListener('click', () => goToPage(currentPage + 1));
+        nav.appendChild(next);
+    }
+
+    const info = document.createElement('div');
+    info.style.cssText = 'grid-column:1/-1;text-align:center;color:#888;font-size:.85rem;padding:4px 0;';
+    info.textContent = `Fotos ${pageData.start + 1}\u2013${pageData.end} de ${pageData.total}`;
+
+    container.appendChild(info);
+    container.appendChild(nav);
+}
+
 function renderGallery() {
     const grid = document.getElementById('photosGrid');
-    grid.innerHTML = '';
+    if (!grid) return;
+    const topPag = document.getElementById('paginationTop');
+    const bottomPag = document.getElementById('paginationBottom');
 
-    if (photos.length === 0) {
-        grid.innerHTML = '<div class="no-photos-message">No hay fotos disponibles aún.</div>';
+    grid.innerHTML = '';
+    if (topPag) topPag.innerHTML = '';
+    if (bottomPag) bottomPag.innerHTML = '';
+
+    const filtered = getFilteredIndices();
+    if (filtered.length === 0) {
+        grid.innerHTML = currentFilter === 'all'
+            ? '<div class="no-photos-message">No hay fotos disponibles a\u00fan.</div>'
+            : '<div class="no-photos-message">No hay fotos en esta categor\u00eda.</div>';
         return;
     }
 
-    photos.forEach((photo, index) => {
+    // Validar pagina actual
+    const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+    if (currentPage >= totalPages) currentPage = totalPages - 1;
+    if (currentPage < 0) currentPage = 0;
+
+    // Paginacion arriba
+    if (topPag) renderPagination(topPag);
+
+    const pgStart = currentPage * PAGE_SIZE;
+    const pgEnd = Math.min(pgStart + PAGE_SIZE, filtered.length);
+
+    for (let fi = pgStart; fi < pgEnd; fi++) {
+        const index = filtered[fi];
+        const photo = photos[index];
         const selection = photoSelections[index] || {};
         const hasAny = selection.ampliacion || selection.impresion || selection.invitacion || selection.descartada;
 
@@ -1001,17 +1144,17 @@ function renderGallery() {
         let badgesHTML = '';
         if (hasAny) {
             badgesHTML = '<div class="photo-badges">';
-            if (selection.ampliacion) badgesHTML += '<span class="badge badge-ampliacion">🖼️ Ampliación</span>';
-            if (selection.impresion) badgesHTML += '<span class="badge badge-impresion">📸 Impresión</span>';
-            if (selection.invitacion) badgesHTML += '<span class="badge badge-invitacion">💌 Invitación</span>';
-            if (selection.descartada) badgesHTML += '<span class="badge badge-descartada">❌ Descartada</span>';
+            if (selection.ampliacion) badgesHTML += '<span class="badge badge-ampliacion">\uD83D\uDDBC\uFE0F Ampliaci\u00f3n</span>';
+            if (selection.impresion) badgesHTML += '<span class="badge badge-impresion">\uD83D\uDCF8 Impresi\u00f3n</span>';
+            if (selection.invitacion) badgesHTML += '<span class="badge badge-invitacion">\uD83D\uDC8C Invitaci\u00f3n</span>';
+            if (selection.descartada) badgesHTML += '<span class="badge badge-descartada">\u274C Descartada</span>';
             badgesHTML += '</div>';
         }
 
         const displayNumber = `Foto ${index + 1}`;
         const mediaHTML = `
             <div class="photo-image-container">
-                <img src="${photo}" alt="${displayNumber}" loading="lazy">
+                <img src="${getThumbPath(photo)}" alt="${displayNumber}" loading="lazy" onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src=this.src.replace('/thumb/','/')}">
             </div>
         `;
 
@@ -1023,9 +1166,10 @@ function renderGallery() {
 
         card.addEventListener('click', () => openModal(index));
         grid.appendChild(card);
-    });
+    }
 
-    applyFilter();
+    // Paginacion abajo
+    if (bottomPag) renderPagination(bottomPag);
 }
 
 // ========================================
@@ -1066,7 +1210,9 @@ function applyFilter() {
 
 function setFilter(filter) {
     currentFilter = filter;
-    applyFilter();
+    currentPage = 0;
+    renderGallery();
+    updateStats();
 
     document.querySelectorAll('.btn-filter').forEach(btn => {
         btn.classList.remove('active');
@@ -1121,6 +1267,8 @@ function openModal(index) {
 }
 
 function closeModal() {
+    saveCurrentSelections();
+    renderGallery();
     const modal = document.getElementById('photoModal');
     modal.classList.remove('active');
     document.body.style.overflow = 'auto';
@@ -1154,24 +1302,60 @@ function saveCurrentSelections() {
     if (currentPhotoIndex === null) return;
 
     const selectedCategories = {};
-    let hasAnySelection = false;
-
     document.querySelectorAll(".option-btn").forEach(btn => {
         const category = btn.dataset.category;
-        const isSelected = btn.classList.contains("selected");
-        selectedCategories[category] = isSelected;
-        if (isSelected) hasAnySelection = true;
+        selectedCategories[category] = btn.classList.contains("selected");
     });
 
-    if (hasAnySelection) {
-        photoSelections[currentPhotoIndex] = selectedCategories;
-    } else {
-        delete photoSelections[currentPhotoIndex];
-    }
-
-    saveSelections();
+    persistPhotoSelection(currentPhotoIndex, selectedCategories, { silent: true });
     updateStats();
     updateFilterButtons();
+}
+
+function persistPhotoSelection(index, selection, options) {
+    const previousSelection = photoSelections[index] || {};
+    const normalized = normalizeSelection(selection);
+    const changed = !selectionsAreEqual(previousSelection, normalized);
+    const silent = options && options.silent;
+
+    if (!changed) {
+        saveSelections({ sync: false });
+        return false;
+    }
+
+    if (hasAnySelection(normalized)) {
+        photoSelections[index] = normalized;
+        saveSelections({ sync: false });
+        if (typeof sbSaveSelection === 'function') {
+            sbSaveSelection(index, normalized).catch(function(e) { console.warn('[Supabase] Save:', e.message); });
+        } else if (typeof sbUpsertSelections === 'function') {
+            sbUpsertSelections().catch(function(e) { console.warn('[Supabase] Sync:', e.message); });
+        }
+    } else {
+        delete photoSelections[index];
+        saveSelections({ sync: false });
+        if (typeof sbDeleteSelection === 'function') {
+            sbDeleteSelection(index).catch(function(e) { console.warn('[Supabase] Delete:', e.message); });
+        }
+    }
+
+    if (!silent) showToast('Selección actualizada', 'success');
+    return true;
+}
+
+function deleteCurrentSelection() {
+    if (currentPhotoIndex === null) return;
+    const displayNumber = currentPhotoIndex + 1;
+    if (!confirm('¿Borrar la selección de la foto ' + displayNumber + '? Esta acción se sincronizará con todos los dispositivos.')) {
+        return;
+    }
+    persistPhotoSelection(currentPhotoIndex, {}, { silent: true });
+    document.querySelectorAll('.option-btn').forEach(btn => btn.classList.remove('selected'));
+    renderGallery();
+    updateStats();
+    updateFilterButtons();
+    closeModal();
+    showToast('Selección borrada', 'success');
 }
 
 function updateNavigationButtons() {
@@ -1188,22 +1372,12 @@ function saveModalSelection() {
     if (currentPhotoIndex === null) return;
 
     const selectedCategories = {};
-    let hasAnySelection = false;
-
     document.querySelectorAll('.option-btn').forEach(btn => {
         const category = btn.dataset.category;
-        const isSelected = btn.classList.contains('selected');
-        selectedCategories[category] = isSelected;
-        if (isSelected) hasAnySelection = true;
+        selectedCategories[category] = btn.classList.contains('selected');
     });
 
-    if (hasAnySelection) {
-        photoSelections[currentPhotoIndex] = selectedCategories;
-    } else {
-        delete photoSelections[currentPhotoIndex];
-    }
-
-    saveSelections();
+    persistPhotoSelection(currentPhotoIndex, selectedCategories, { silent: true });
     renderGallery();
     updateStats();
     updateFilterButtons();
@@ -1359,6 +1533,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelector('.modal-close').addEventListener('click', closeModal);
     document.getElementById('btnCancelSelection').addEventListener('click', closeModal);
     document.getElementById('btnSaveSelection').addEventListener('click', saveModalSelection);
+    var btnDel = document.getElementById('btnDeleteSelection');
+    if (btnDel) btnDel.addEventListener('click', deleteCurrentSelection);
 
     document.querySelectorAll('.option-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -1421,10 +1597,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-        saveSelections();
+        saveSelections({ sync: false });
+    } else if (typeof sbRefreshSelections === 'function') {
+        sbRefreshSelections().catch(function(e) { console.warn('[Supabase] Refresh:', e.message); });
     }
 });
 
 window.addEventListener('beforeunload', () => {
-    saveSelections();
+    saveSelections({ sync: false });
 });
