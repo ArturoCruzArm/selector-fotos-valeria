@@ -1544,7 +1544,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isCurrentlySelected) {
                 const stats = getStats();
 
-                if (category === 'ampliacion' && stats.ampliacion >= LIMITES.ampliacion) {
+                if (category === 'ampliacion' && LIMITES.ampliacion && stats.ampliacion >= LIMITES.ampliacion) {
                     const currentSelection = photoSelections[currentPhotoIndex] || {};
                     if (!currentSelection.ampliacion) {
                         showToast(`⚠️ Ya seleccionaste ${LIMITES.ampliacion} foto(s) para ampliación. Deselecciona otra primero.`, 'error');
@@ -1552,7 +1552,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                if (category === 'impresion' && stats.impresion >= LIMITES.impresion) {
+                if (category === 'impresion' && LIMITES.impresion && stats.impresion >= LIMITES.impresion) {
                     const currentSelection = photoSelections[currentPhotoIndex] || {};
                     if (!currentSelection.impresion) {
                         showToast(`⚠️ Ya seleccionaste ${LIMITES.impresion} fotos para impresión. Deselecciona otra primero.`, 'error');
