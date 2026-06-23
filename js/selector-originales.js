@@ -2485,7 +2485,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isCurrentlySelected) {
                 const stats = getStats();
 
-                if (category === 'ampliacion' && stats.ampliacion >= LIMITES.ampliacion) {
+                if (category === 'ampliacion' && LIMITES.ampliacion && stats.ampliacion >= LIMITES.ampliacion) {
                     const currentSelection = photoSelections[currentPhotoIndex] || {};
                     if (!currentSelection.ampliacion) {
                         showToast(`\u26A0\uFE0F Ya seleccionaste ${LIMITES.ampliacion} foto(s) para ampliaci\u00f3n. Deselecciona otra primero.`, 'error');
